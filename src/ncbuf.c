@@ -506,6 +506,16 @@ ncb_sz_t ncb_data(const struct ncbuf *buf, ncb_sz_t off)
 	return blk.sz - off_blk;
 }
 
+ncb_sz_t ncb_front_gap(const struct ncbuf *buf)
+{
+	if (ncb_is_null(buf))
+		return 0;
+
+	if (ncb_read_off(buf, ncb_reserved(buf)))
+		return 0;
+	return ncb_read_off(buf, ncb_peek(buf, 0));
+}
+
 /* Add a new block at <data> of size <len> in <buf> at offset <off>.
  *
  * Returns NCB_RET_OK on success. On error the following codes are returned :

@@ -1318,6 +1318,34 @@ static struct qc_stream_rxbuf *qcs_get_curr_rxbuf(struct qcs *qcs)
 	return buf;
 }
 
+static struct qc_stream_rxbuf *qcs_realloc_front_rxbuf(struct qcs *qcs, struct qc_stream_rxbuf *old, ncb_sz_t len)
+{
+	struct qc_stream_rxbuf *new;
+	enum ncb_ret ret __maybe_unused;
+
+	BUG_ON(!len);
+
+	new = pool_alloc(pool_head_qc_stream_rxbuf);
+	if (!new)
+		return NULL;
+
+	eb64_delete(&old->off_node);
+	ret = ncb_advance(&old->ncb, len);
+	BUG_ON(ret != NCB_RET_OK);
+
+	new->ncb = NCBUF_NULL;
+	new->off_node.key = qcs->rx.offset;
+	new->off_end = qcs->rx.offset + len;
+
+	eb64_insert(&qcs->rx.bufs, &new->off_node);
+	bdata_ctr_binc(&qcs->rx.data);
+
+	old->off_node.key = qcs->rx.offset + len;
+	eb64_insert(&qcs->rx.bufs, &old->off_node);
+
+	return new;
+}
+
 /* Returns the amount of data readable at <qcs> stream on current buffer. Note
  * that this does account for hypothetical contiguous data divided on other
  * Rx buffers instances.
@@ -2040,6 +2068,7 @@ int qcc_recv(struct qcc *qcc, uint64_t id, uint64_t len, uint64_t offset,
 	}
 
 	left = len;
+ loop:
 	while (left) {
 		struct qc_stream_rxbuf *buf;
 		struct proxy *px;
@@ -2080,8 +2109,16 @@ int qcc_recv(struct qcc *qcc, uint64_t id, uint64_t len, uint64_t offset,
 			return 1;
 
 		case NCB_RET_GAP_SIZE:
-			TRACE_DATA("cannot bufferize frame due to gap size limit", QMUX_EV_QCC_RECV|QMUX_EV_QCS_RECV,
-			           qcc->conn, qcs);
+			/* Insert in front of current buffer. Alloc a new temporary buffer to prevent failure. */
+			if (offset == qcs->rx.offset) {
+				ncb_sz_t gap = ncb_front_gap(&buf->ncb);
+				qcs_realloc_front_rxbuf(qcs, buf, gap);
+				qcs->flags |= QC_SF_REALLOC;
+				goto loop;
+			}
+
+			TRACE_ERROR("cannot bufferize frame due to gap size limit", QMUX_EV_QCC_RECV|QMUX_EV_QCS_RECV,
+			            qcc->conn, qcs);
 			px = qcc->proxy;
 			prx_counters = EXTRA_COUNTERS_GET(px->extra_counters_fe, &quic_stats_module);
 			HA_ATOMIC_INC(&prx_counters->ncbuf_gap_limit);
