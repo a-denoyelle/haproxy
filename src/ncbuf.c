@@ -1,25 +1,23 @@
 #include <haproxy/ncbuf.h>
 
+#include <stdio.h>
 #include <string.h>
+#include <haproxy/compat.h>
 
 #ifndef MIN
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #endif
 
-#ifdef STANDALONE
-#include <stdarg.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <unistd.h>
-
-#include <haproxy/list.h>
-#endif /* STANDALONE */
-
-#ifdef DEBUG_STRICT
+#if !defined(STANDALONE)
 # include <haproxy/bug.h>
+
 #else
-# include <stdio.h>
+# include <stdarg.h>
 # include <stdlib.h>
+# include <stdio.h>
+# include <unistd.h>
+
+# include <haproxy/list.h>
 
 # undef  BUG_ON
 # define BUG_ON(x)     if (x) { fprintf(stderr, "CRASH ON %s:%d\n", __func__, __LINE__); abort(); }
