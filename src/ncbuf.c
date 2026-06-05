@@ -243,8 +243,12 @@ static enum ncb_ret ncb_check_insert(const struct ncbuf *buf,
 	 * gap header.
 	 */
 	if (left && (blk->flag & NCB_BK_F_GAP)) {
-		if (off_blk < NCB_GAP_MIN_SZ)
+		if (off_blk < NCB_GAP_MIN_SZ) {
+			fprintf(stderr, "[%s:%d] Not enough gap after the new data %llu (%llu:%llu)\n",
+				        __func__, __LINE__, (ullong)off_blk,
+				        (ullong)blk->sz, (ullong)blk->sz_data);
 			return NCB_RET_GAP_SIZE;
+		}
 	}
 
 	next = *blk;
@@ -257,8 +261,12 @@ static enum ncb_ret ncb_check_insert(const struct ncbuf *buf,
 			 * header if stopped in a middle of a gap.
 			 */
 			const ncb_sz_t gap_sz = next.sz - (off_blk + to_copy);
-			if (gap_sz < NCB_GAP_MIN_SZ && !ncb_blk_is_last(buf, &next))
+			if (gap_sz < NCB_GAP_MIN_SZ && !ncb_blk_is_last(buf, &next)) {
+				fprintf(stderr, "[%s:%d] Not enough gap after the new data %llu (%llu:%llu)\n",
+					        __func__, __LINE__, (ullong)off_blk,
+					        (ullong)next.sz, (ullong)next.sz_data);
 				return NCB_RET_GAP_SIZE;
+			}
 		}
 		else if (!(next.flag & NCB_BK_F_GAP) && mode == NCB_ADD_COMPARE) {
 			/* Compare memory of data block in NCB_ADD_COMPARE mode. */

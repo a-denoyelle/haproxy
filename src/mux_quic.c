@@ -809,7 +809,7 @@ void qcc_set_error(struct qcc *qcc, int err, int app, int tevt)
 	/* This must not be called multiple times per connection. */
 	BUG_ON(qcc->flags & QC_CF_ERRL);
 
-	TRACE_STATE("connection on error", QMUX_EV_QCC_ERR, qcc->conn);
+	TRACE_ERROR("connection on error", QMUX_EV_QCC_ERR, qcc->conn);
 
 	qcc->flags |= QC_CF_ERRL;
 	qcc->err = app ? quic_err_app(err) : quic_err_transport(err);
@@ -1346,6 +1346,13 @@ static struct qc_stream_rxbuf *qcs_realloc_front_rxbuf(struct qcs *qcs,
 	old->off_node.key = qcs->rx.offset + len;
 	eb64_insert(&qcs->rx.bufs, &old->off_node);
 
+	fprintf(stderr, "[%p:%lu] realloc front buffer %p:%llu:%llu (%p:%llu:%llu[%llu])\n",
+	        qcs, qcs->id,
+	        new, (ullong)new->off_node.key, (ullong)new->off_end,
+	        old,  (ullong)old->off_node.key,  (ullong)old->off_end,
+	        (ullong)ncb_data(&old->ncb, 0));
+
+	qcs->flags |= QC_SF_REALLOC;
 	return new;
 }
 
@@ -1481,6 +1488,10 @@ static int qcc_decode_qcs(struct qcc *qcc, struct qcs *qcs)
 
  restart:
 	rxbuf = qcs_get_curr_rxbuf(qcs);
+	if (qcs->flags & QC_SF_REALLOC) fprintf(stderr, "[%p:%lu] decode rxbuf %p:%llu:%llu[%llu]\n",
+	  qcs, qcs->id,
+	  rxbuf, (ullong)rxbuf->off_node.key, (ullong)rxbuf->off_end,
+	  (ullong)ncb_data(&rxbuf->ncb, 0));
 	b = qcs_b_dup(rxbuf);
 
 	/* Signal FIN to application if STREAM FIN received with all data. */
@@ -1523,8 +1534,12 @@ static int qcc_decode_qcs(struct qcc *qcc, struct qcs *qcs)
 	}
 
 	if (rxbuf) {
-		if (ret)
+		if (ret) {
 			qcs_consume(qcs, ret, rxbuf);
+			if (qcs->flags & QC_SF_REALLOC) fprintf(stderr, "[%p:%lu] consume %llu(%llu) from rxbuf %p:%llu:%llu\n",
+			  qcs, qcs->id,
+			  (ullong)ret, (ullong)qcs->rx.offset, rxbuf, (ullong)rxbuf->off_node.key, (ullong)rxbuf->off_end);
+		}
 
 		if (ncb_is_empty(&rxbuf->ncb)) {
 			qcs_free_rxbuf(qcs, rxbuf);
@@ -1981,7 +1996,7 @@ int qcc_recv(struct qcc *qcc, uint64_t id, uint64_t len, uint64_t offset,
 	TRACE_ENTER(QMUX_EV_QCC_RECV, qcc->conn);
 
 	if (qcc->flags & QC_CF_ERRL) {
-		TRACE_DATA("connection on error", QMUX_EV_QCC_RECV, qcc->conn);
+		TRACE_ERROR("connection on error", QMUX_EV_QCC_RECV, qcc->conn);
 		goto err;
 	}
 
@@ -1993,7 +2008,7 @@ int qcc_recv(struct qcc *qcc, uint64_t id, uint64_t len, uint64_t offset,
 	 * stream.
 	 */
 	if (qcc_get_qcs(qcc, id, 1, 0, &qcs)) {
-		TRACE_DATA("qcs retrieval error", QMUX_EV_QCC_RECV, qcc->conn);
+		TRACE_ERROR("qcs retrieval error", QMUX_EV_QCC_RECV, qcc->conn);
 		goto err;
 	}
 
@@ -2001,6 +2016,8 @@ int qcc_recv(struct qcc *qcc, uint64_t id, uint64_t len, uint64_t offset,
 		TRACE_DATA("already closed stream", QMUX_EV_QCC_RECV, qcc->conn);
 		goto out;
 	}
+
+	//fprintf(stderr, "qcc_recv %llu:%llu:%llu\n", (ullong)id, (ullong)offset, (ullong)len);
 
 	/* RFC 9000 4.5. Stream Final Size
 	 *
@@ -2086,12 +2103,19 @@ int qcc_recv(struct qcc *qcc, uint64_t id, uint64_t len, uint64_t offset,
 			goto err;
 		}
 
+		if (qcs->flags & QC_SF_REALLOC) fprintf(stderr, "[%p:%lu] use rxbuf %p:%llu:%llu\n", qcs, qcs->id, buf, (ullong)buf->off_node.key, (ullong)buf->off_end);
+
 		/* For oldest buffer, ncb_advance() may already have been performed. */
 		ncb_off = offset - MAX(qcs->rx.offset, buf->off_node.key);
+		if (qcs->flags & QC_SF_REALLOC) fprintf(stderr, "[%p:%lu] insert %llu:%llu\n", qcs, qcs->id, (ullong)ncb_off, (ullong)len);
 
 		ncb_ret = ncb_add(&buf->ncb, ncb_off, data, len, NCB_ADD_COMPARE);
 		switch (ncb_ret) {
 		case NCB_RET_OK:
+			if (qcs->flags & QC_SF_REALLOC) fprintf(stderr, "[%p:%lu] insert done %p:%llu:%llu [%llu]\n",
+			  qcs, qcs->id,
+			  buf, (ullong)buf->off_node.key, (ullong)buf->off_end,
+			  (ullong)ncb_data(&buf->ncb, 0));
 			break;
 
 		case NCB_RET_DATA_REJ:
@@ -2112,6 +2136,38 @@ int qcc_recv(struct qcc *qcc, uint64_t id, uint64_t len, uint64_t offset,
 			return 1;
 
 		case NCB_RET_GAP_SIZE:
+			fprintf(stderr, "[%p:%lu] cannot insert block %llu:%llu on %llu\n", qcs, qcs->id, (ullong)offset, (ullong)len, (ullong)qcs->rx.offset);
+#if 0
+			if (offset == qcs->rx.offset) {
+				struct qc_stream_rxbuf *buf2;
+				ncb_sz_t gap = ncb_front_gap(&buf->ncb);
+
+				buf2 = pool_alloc(pool_head_qc_stream_rxbuf);
+				buf2->ncb = NCBUF_NULL;
+				buf2->off_node.key = offset;
+				//buf2->off_end = offset + len;
+				buf2->off_end = offset + gap;
+
+				eb64_delete(&buf->off_node);
+				eb64_insert(&qcs->rx.bufs, &buf2->off_node);
+				bdata_ctr_binc(&qcs->rx.data);
+
+				//ncb_advance(&buf->ncb, offset + len - buf->off_node.key);
+				ncb_ret = ncb_advance(&buf->ncb, gap);
+				BUG_ON(ncb_ret != NCB_RET_OK);
+				//buf->off_node.key = offset + len;
+				buf->off_node.key = offset + gap;
+				//buf->off_end -= (qcs->rx.offset + len) - buf->off_node.key;
+				eb64_insert(&qcs->rx.bufs, &buf->off_node);
+				fprintf(stderr, "force realloc of a buffer %p:%llu:%llu (%p:%llu:%llu[%llu])\n",
+				        buf2, (ullong)buf2->off_node.key, (ullong)buf2->off_end,
+				        buf,  (ullong)buf->off_node.key,  (ullong)buf->off_end,
+				        (ullong)ncb_data(&buf->ncb, 0));
+				qcs->flags |= QC_SF_REALLOC;
+				goto loop;
+			}
+#endif
+
 			/* Insert in front of current buffer. Alloc a new temporary buffer to prevent failure. */
 			if (offset == qcs->rx.offset) {
 				ncb_sz_t gap = ncb_front_gap(&buf->ncb);
@@ -2131,6 +2187,10 @@ int qcc_recv(struct qcc *qcc, uint64_t id, uint64_t len, uint64_t offset,
 				}
 			}
 
+			fprintf(stderr, "%llu / %llu / %llu / %llu\n",
+			  (ullong)ncb_off, (ullong)offset, (ullong)qcs->rx.offset, (ullong)buf->off_node.key);
+
+			//ABORT_NOW();
 			TRACE_ERROR("cannot bufferize frame due to gap size limit", QMUX_EV_QCC_RECV|QMUX_EV_QCS_RECV,
 			            qcc->conn, qcs);
 			px = qcc->proxy;
@@ -2182,6 +2242,7 @@ int qcc_recv(struct qcc *qcc, uint64_t id, uint64_t len, uint64_t offset,
 	return 0;
 
  err:
+	TRACE_ERROR("qcc_recv failure", QMUX_EV_QCC_RECV, qcc->conn);
 	TRACE_LEAVE(QMUX_EV_QCC_RECV, qcc->conn);
 	return 1;
 }
