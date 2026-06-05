@@ -549,6 +549,7 @@ static struct ncbuf *qcs_get_ncbuf(struct qcs *qcs, struct ncbuf *ncbuf)
 		if (!b_alloc(&buf, DB_MUX_RX))
 			return NULL;
 
+		memset(buf.area, 0, global.tune.bufsize);
 		*ncbuf = ncb_make(buf.area, buf.size, 0);
 		ncb_init(ncbuf, 0);
 	}

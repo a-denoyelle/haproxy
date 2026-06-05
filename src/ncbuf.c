@@ -385,6 +385,7 @@ void ncb_init(struct ncbuf *buf, ncb_sz_t head)
 
 	BUG_ON_HOT(head >= buf->size);
 	buf->head = head;
+	memset(buf->area, 0, buf->size);
 
 	ncb_write_off(buf, ncb_reserved(buf), 0);
 	ncb_write_off(buf, ncb_head(buf), ncb_size(buf));
