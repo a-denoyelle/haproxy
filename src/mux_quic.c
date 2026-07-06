@@ -1318,7 +1318,9 @@ static struct qc_stream_rxbuf *qcs_get_curr_rxbuf(struct qcs *qcs)
 	return buf;
 }
 
-static struct qc_stream_rxbuf *qcs_realloc_front_rxbuf(struct qcs *qcs, struct qc_stream_rxbuf *old, ncb_sz_t len)
+static struct qc_stream_rxbuf *qcs_realloc_front_rxbuf(struct qcs *qcs,
+                                                       struct qc_stream_rxbuf *old,
+                                                       ncb_sz_t len)
 {
 	struct qc_stream_rxbuf *new;
 	enum ncb_ret ret __maybe_unused;
@@ -2073,7 +2075,7 @@ int qcc_recv(struct qcc *qcc, uint64_t id, uint64_t len, uint64_t offset,
 		struct qc_stream_rxbuf *buf;
 		struct proxy *px;
 		struct quic_counters *prx_counters;
-		ncb_sz_t ncb_off;
+		ncb_sz_t ncb_off, off2;
 
 		buf = qcs_get_rxbuf(qcs, offset, &len);
 		if (!buf) {
@@ -2113,8 +2115,19 @@ int qcc_recv(struct qcc *qcc, uint64_t id, uint64_t len, uint64_t offset,
 			if (offset == qcs->rx.offset) {
 				ncb_sz_t gap = ncb_front_gap(&buf->ncb);
 				qcs_realloc_front_rxbuf(qcs, buf, gap);
-				qcs->flags |= QC_SF_REALLOC;
 				goto loop;
+			}
+
+			off2 = ncb_first_data(&buf->ncb);
+			if (buf->off_node.key <= qcs->rx.offset) {
+				if (off2 == (ncb_sz_t)-1) {
+					qcs_realloc_front_rxbuf(qcs, buf, offset - qcs->rx.offset);
+					goto loop;
+				}
+				else if (qcs->rx.offset + off2 > offset) {
+					qcs_realloc_front_rxbuf(qcs, buf, off2);
+					goto loop;
+				}
 			}
 
 			TRACE_ERROR("cannot bufferize frame due to gap size limit", QMUX_EV_QCC_RECV|QMUX_EV_QCS_RECV,

@@ -514,6 +514,29 @@ ncb_sz_t ncb_front_gap(const struct ncbuf *buf)
 	return ncb_read_off(buf, ncb_peek(buf, 0));
 }
 
+ncb_sz_t ncb_first_data(const struct ncbuf *buf)
+{
+	struct ncb_blk blk;
+
+	if (ncb_is_null(buf))
+		return (ncb_sz_t)-1;
+
+	blk = ncb_blk_first(buf);
+	BUG_ON(blk.flag & NCB_BK_F_GAP);
+	if (blk.sz)
+		return blk.off;
+	blk = ncb_blk_next(buf, &blk);
+	BUG_ON(!(blk.flag & NCB_BK_F_GAP));
+	blk = ncb_blk_next(buf, &blk);
+
+	if (!ncb_blk_is_null(&blk)) {
+		BUG_ON(blk.flag & NCB_BK_F_GAP);
+		return blk.off;
+	}
+
+	return (ncb_sz_t)-1;
+}
+
 /* Add a new block at <data> of size <len> in <buf> at offset <off>.
  *
  * Returns NCB_RET_OK on success. On error the following codes are returned :
@@ -844,6 +867,7 @@ static int ncbuf_test(ncb_sz_t head, int reset, int print_delay)
 	NCB_INIT(&b);
 	NCB_DATA_EQ(&b, 0, 0); NCB_DATA_EQ(&b, bufsize - NCB_RESERVED_SZ - 1, 0); /* first and last offset */
 	NCB_ADD_EQ(&b, 24, data0,  9, NCB_ADD_PRESERVE, NCB_RET_OK); NCB_DATA_EQ(&b, 24,  9);
+	BUG_ON(ncb_first_data(&b) != 24);
 	/* insert new data at the same offset as old */
 	NCB_ADD_EQ(&b, 24, data0, 16, NCB_ADD_PRESERVE, NCB_RET_OK); NCB_DATA_EQ(&b, 24, 16);
 
