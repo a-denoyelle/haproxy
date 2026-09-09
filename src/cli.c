@@ -2271,30 +2271,9 @@ static int cli_parse_wait(char **args, char *payload, struct appctx *appctx, voi
 	}
 
 	if (strcmp(args[2], "srv-removable") == 0) {
-		const char *bename, *svname;
-
-		if (!*args[3])
-			return cli_err(appctx, "Missing server name (<backend>/<server>).\n");
-
-		if (parse_be_srv(args[3], &bename, &svname, &ctx->msg))
-			return cli_err(appctx, ctx->msg);
-
-		ctx->args[0] = strdup(bename);
-		ctx->args[1] = strdup(svname);
-		if (!ctx->args[0] || !ctx->args[1]) {
-			free(ctx->args[0]);
-			free(ctx->args[1]);
-			return cli_err(appctx, "Out of memory trying to clone the server name.\n");
-		}
-
 		ctx->cond = CLI_WAIT_COND_SRV_UNUSED;
 	}
 	else if (strcmp(args[2], "be-removable") == 0) {
-		if (!*args[3])
-			return cli_err(appctx, "Missing backend name.\n");
-		ctx->args[0] = strdup(args[3]);
-		if (!ctx->args[0])
-			return cli_err(appctx, "Out of memory trying to clone the backend name.\n");
 		ctx->cond = CLI_WAIT_COND_BE_UNUSED;
 	}
 	else if (*args[2]) {
@@ -2313,6 +2292,39 @@ static int cli_parse_wait(char **args, char *payload, struct appctx *appctx, voi
 			return cli_msg(appctx, LOG_INFO, err);
 		else
 			return cli_err(appctx, err);
+	}
+
+	switch (ctx->cond) {
+	case CLI_WAIT_COND_SRV_UNUSED: {
+		const char *bename, *svname;
+
+		if (!*args[3])
+			return cli_err(appctx, "Missing server name (<backend>/<server>).\n");
+
+		if (parse_be_srv(args[3], &bename, &svname, &ctx->msg))
+			return cli_err(appctx, ctx->msg);
+
+		ctx->args[0] = strdup(bename);
+		ctx->args[1] = strdup(svname);
+		if (!ctx->args[0] || !ctx->args[1]) {
+			free(ctx->args[0]);
+			free(ctx->args[1]);
+			return cli_err(appctx, "Out of memory trying to clone the server name.\n");
+		}
+
+		break;
+	}
+
+	case CLI_WAIT_COND_BE_UNUSED:
+		if (!*args[3])
+			return cli_err(appctx, "Missing backend name.\n");
+		ctx->args[0] = strdup(args[3]);
+		if (!ctx->args[0])
+			return cli_err(appctx, "Out of memory trying to clone the backend name.\n");
+		break;
+
+	case CLI_WAIT_COND_NONE:
+		break;
 	}
 
 	ctx->start = now_ms;
