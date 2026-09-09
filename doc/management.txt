@@ -4690,6 +4690,12 @@ wait { -h | <delay> } [<condition> [<args>...]]
     not met. If everything is OK before the delay, a success is returned and
     the operation is terminated.
 
+  - srv-deleted <proxy>/<server> : this is similar to the following
+    "srv-removable" argument in that it will wait for a server to be removable
+    before the delay expiration. The difference is that when the condition is
+    validated, the server is automatically removed if it was flagged for
+    deletion.
+
   - srv-removable <proxy>/<server> : this will wait for the specified server to
     be removable by the "del server" command, i.e. be in maintenance and no
     longer have any connection on it (neither active or idle). Some conditions

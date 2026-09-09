@@ -2460,6 +2460,9 @@ static int cli_parse_wait(char **args, char *payload, struct appctx *appctx, voi
 	if (strcmp(args[2], "srv-removable") == 0) {
 		ctx->cond = CLI_WAIT_COND_SRV_UNUSED;
 	}
+	else if (strcmp(args[2], "srv-deleted") == 0) {
+		ctx->cond = CLI_WAIT_COND_SRV_DELETED;
+	}
 	else if (strcmp(args[2], "be-removable") == 0) {
 		ctx->cond = CLI_WAIT_COND_BE_UNUSED;
 	}
@@ -2474,6 +2477,7 @@ static int cli_parse_wait(char **args, char *payload, struct appctx *appctx, voi
 			"    - <none> : by default, just sleep for the specified duration.\n"
 			"    - srv-removable <px>/<sv> : wait for this server to become removable.\n"
 			"    - be-removable <px> : wait for this backend to become removable.\n"
+			"    - srv-deleted <px>/<sv> : wait for this flagged server to be deleted.\n"
 			"";
 
 		if (strcmp(args[2], "-h") == 0)
@@ -2483,7 +2487,8 @@ static int cli_parse_wait(char **args, char *payload, struct appctx *appctx, voi
 	}
 
 	switch (ctx->cond) {
-	case CLI_WAIT_COND_SRV_UNUSED: {
+	case CLI_WAIT_COND_SRV_UNUSED:
+	case CLI_WAIT_COND_SRV_DELETED: {
 		const char *bename, *svname;
 
 		if (!*args[3])
@@ -2543,8 +2548,10 @@ static int cli_io_handler_wait(struct appctx *appctx)
 	/* here we should evaluate our waiting conditions, if any */
 
 	if (ctx->cond == CLI_WAIT_COND_SRV_UNUSED ||
+	    ctx->cond == CLI_WAIT_COND_SRV_DELETED ||
 	    ctx->cond == CLI_WAIT_COND_BE_UNUSED) {
-		if (ctx->cond == CLI_WAIT_COND_SRV_UNUSED) {
+		if (ctx->cond == CLI_WAIT_COND_SRV_UNUSED ||
+		    ctx->cond == CLI_WAIT_COND_SRV_DELETED) {
 			struct server *srv;
 
 			srv = find_be_srv(ctx->args[0], ctx->args[1], &ctx->msg);
@@ -2553,8 +2560,29 @@ static int cli_io_handler_wait(struct appctx *appctx)
 				goto wait_srv_done;
 			}
 
+			if (ctx->cond == CLI_WAIT_COND_SRV_DELETED &&
+			    !(srv->flags & SRV_F_TO_DELETE)) {
+				ret = -1;
+				ctx->msg = "Server not flagged for deletion.\n";
+				goto wait_srv_done;
+			}
+
 			/* check if the server in args can be released now */
 			ret = srv_check_for_deletion(srv, &ctx->msg);
+
+			/* Proceed to server deletion now if requested. */
+			if (ret > 0 && ctx->cond == CLI_WAIT_COND_SRV_DELETED) {
+				/* Perform again all operations under thread
+				 * isolation including server lookup to prevent
+				 * any race.
+				 */
+				thread_isolate_full();
+				srv = find_be_srv(ctx->args[0], ctx->args[1], &ctx->msg);
+				ret = srv ? srv_check_for_deletion(srv, &ctx->msg) : -1;
+				if (ret > 0)
+					srv_unregister(srv);
+				thread_release();
+			}
 		}
 		else {
 			ret = be_check_for_deletion(ctx->args[0], NULL, &ctx->msg);
