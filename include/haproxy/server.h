@@ -272,6 +272,9 @@ static inline void srv_adm_set_maint(struct server *s)
 {
 	srv_set_admin_flag(s, SRV_ADMF_FMAINT, SRV_ADM_STCHGC_NONE);
 	srv_clr_admin_flag(s, SRV_ADMF_FDRAIN);
+
+	/* Cancel any pending deletion if in progress. */
+	s->flags &= ~SRV_F_TO_DELETE;
 }
 
 /* Puts server <s> into drain mode, and propagate that status down to all
@@ -281,6 +284,9 @@ static inline void srv_adm_set_drain(struct server *s)
 {
 	srv_set_admin_flag(s, SRV_ADMF_FDRAIN, SRV_ADM_STCHGC_NONE);
 	srv_clr_admin_flag(s, SRV_ADMF_FMAINT);
+
+	/* Cancel any pending deletion if in progress. */
+	s->flags &= ~SRV_F_TO_DELETE;
 }
 
 /* Puts server <s> into ready mode, and propagate that status down to all
@@ -290,6 +296,9 @@ static inline void srv_adm_set_ready(struct server *s)
 {
 	srv_clr_admin_flag(s, SRV_ADMF_FDRAIN);
 	srv_clr_admin_flag(s, SRV_ADMF_FMAINT);
+
+	/* Cancel any pending deletion if in progress. */
+	s->flags &= ~SRV_F_TO_DELETE;
 }
 
 static inline void srv_set_init_state(struct server *srv)

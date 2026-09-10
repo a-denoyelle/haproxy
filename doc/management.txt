@@ -2258,7 +2258,7 @@ del ssl jwt <filename>
   See also "add ssl jwt" and "show ssl jwt" commands.
   See "jwt" certificate option for more information.
 
-del server <backend>/<server>
+del server <backend>/<server> [nofail]
   Delete a removable server attached to the backend <backend>. A removable
   server is the server which satisfies all of these conditions :
   - not referenced by other configuration elements
@@ -2272,6 +2272,15 @@ del server <backend>/<server>
   is highly recommended to use "wait srv-removable" before "del server" to
   ensure that all active or idle connections are closed and that the command
   succeeds.
+
+  An optional extra argument "nofail" can be set to limit the possible
+  conditions of failure. First, this automatically puts the server in
+  maintenance if needed. This also deactivates agent checks to prevent an
+  unwanted server state transition. Then, the server is flagged for deletion in
+  the case when it cannot be removed immediately due to remaining connections
+  on it. The removal will be completed as soon as possible via the command
+  "wait srv-deleted". Deletion flag is cancelled if the server state is
+  explicitely setted via any external operation even still in maintenance mode.
 
 disable agent <backend>/<server>
   Mark the auxiliary agent check as temporarily stopped.
