@@ -6891,37 +6891,26 @@ out:
 	return 1;
 }
 
-/* Check if the server <bename>/<svname> exists and is ready for being deleted.
- * This means that the server is in maintenance with no streams attached to it,
- * no queue and no used idle conns. This is not supposed to change during all
- * the maintenance phase (except for force-persist etc, which are not covered).
- * Both <bename> and <svname> must be valid strings. If pb/ps are not null,
- * upon success, the pointer to the backend and server respectively will be put
- * there. If pm is not null, a pointer to an error/success message is returned
- * there (possibly NULL if nothing to say). Returned values:
+/* Check if <srv> server is ready for being deleted. This means that the server
+ * is in maintenance with no streams attached to it, no queue and no used idle
+ * conns. This is not supposed to change during all the maintenance phase
+ * (except for force-persist etc, which are not covered).
+ *
+ * If <pm> is not null, a pointer to an error/success message is returned there
+ * (possibly NULL if nothing to say).
+ *
+ * Returned values:
  *  >0 if OK
  *   0 if not yet (should wait if it can)
  *  <0 if not possible
  */
-int srv_check_for_deletion(const char *bename, const char *svname, struct proxy **pb, struct server **ps, const char **pm)
+int srv_check_for_deletion(struct server *srv, const char **pm)
 {
-	struct server *srv = NULL;
-	struct proxy *be = NULL;
 	const char *msg = NULL;
 	int ret;
 
 	/* First, unrecoverable errors */
 	ret = -1;
-
-	if (!(be = proxy_be_by_name(bename))) {
-		msg = "No such backend.";
-		goto leave;
-	}
-
-	if (!(srv = server_find(be, svname))) {
-		msg = "No such server.";
-		goto leave;
-	}
 
 	if (srv->flags & (SRV_F_NON_PURGEABLE | SRV_F_NAME_REFD)) {
 		msg = "This server cannot be removed at runtime due to other configuration elements pointing to it.";
@@ -6953,10 +6942,6 @@ int srv_check_for_deletion(const char *bename, const char *svname, struct proxy 
 	/* OK, let's go */
 	ret = 1;
 leave:
-	if (pb)
-		*pb = be;
-	if (ps)
-		*ps = srv;
 	if (pm)
 		*pm = msg;
 	return ret;
@@ -6967,9 +6952,7 @@ leave:
  */
 static int cli_parse_delete_server(char **args, char *payload, struct appctx *appctx, void *private)
 {
-	struct proxy *be;
 	struct server *srv, *next;
-	struct ist be_name, sv_name;
 	struct watcher *srv_watch;
 	const char *msg;
 	int ret;
@@ -6987,14 +6970,13 @@ static int cli_parse_delete_server(char **args, char *payload, struct appctx *ap
 	 */
 	thread_isolate_full();
 
-	sv_name = ist(args[1]);
-	be_name = istsplit(&sv_name, '/');
-	if (!istlen(sv_name)) {
-		cli_err(appctx, "Require 'backend/server'.\n");
+	srv = cli_find_server(appctx, args[1]);
+	if (!srv) {
+		/* error message displayed by above function */
 		goto out;
 	}
 
-	ret = srv_check_for_deletion(ist0(be_name), ist0(sv_name), &be, &srv, &msg);
+	ret = srv_check_for_deletion(srv, &msg);
 	if (ret <= 0) {
 		/* failure (recoverable or not) */
 		cli_err(appctx, msg);
@@ -7043,11 +7025,11 @@ static int cli_parse_delete_server(char **args, char *payload, struct appctx *ap
 	proxy_take(srv->proxy);
 
 	/* remove srv from addr_node tree */
-	if (srv->puid < be->conf.first_unused_id)
-		be->conf.first_unused_id = srv->puid; // search from there for next add.
-	ceb32_item_delete(&be->conf.used_server_id, conf.puid_node, puid, srv);
-	cebuis_item_delete(&be->conf.used_server_name, conf.name_node, id, srv);
-	cebuis_item_delete(&be->used_server_addr, addr_node, addr_key, srv);
+	if (srv->puid < srv->proxy->conf.first_unused_id)
+		srv->proxy->conf.first_unused_id = srv->puid; // search from there for next add.
+	ceb32_item_delete(&srv->proxy->conf.used_server_id, conf.puid_node, puid, srv);
+	cebuis_item_delete(&srv->proxy->conf.used_server_name, conf.name_node, id, srv);
+	cebuis_item_delete(&srv->proxy->used_server_addr, addr_node, addr_key, srv);
 
 	/* remove srv from idle_node tree for idle conn cleanup */
 	for (ret = 0; ret < global.nbthread; ret++)

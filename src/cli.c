@@ -2271,26 +2271,22 @@ static int cli_parse_wait(char **args, char *payload, struct appctx *appctx, voi
 	}
 
 	if (strcmp(args[2], "srv-removable") == 0) {
-		struct ist be_name, sv_name;
+		const char *bename, *svname;
 
 		if (!*args[3])
 			return cli_err(appctx, "Missing server name (<backend>/<server>).\n");
 
-		sv_name = ist(args[3]);
-		be_name = istsplit(&sv_name, '/');
-		if (!istlen(sv_name))
-			return cli_err(appctx, "Require 'backend/server'.\n");
+		if (parse_be_srv(args[3], &bename, &svname, &ctx->msg))
+			return cli_err(appctx, ctx->msg);
 
-		be_name = istdup(be_name);
-		sv_name = istdup(sv_name);
-		if (!isttest(be_name) || !isttest(sv_name)) {
-			free(istptr(be_name));
-			free(istptr(sv_name));
+		ctx->args[0] = strdup(bename);
+		ctx->args[1] = strdup(svname);
+		if (!ctx->args[0] || !ctx->args[1]) {
+			free(ctx->args[0]);
+			free(ctx->args[1]);
 			return cli_err(appctx, "Out of memory trying to clone the server name.\n");
 		}
 
-		ctx->args[0] = ist0(be_name);
-		ctx->args[1] = ist0(sv_name);
 		ctx->cond = CLI_WAIT_COND_SRV_UNUSED;
 	}
 	else if (strcmp(args[2], "be-removable") == 0) {
@@ -2349,13 +2345,22 @@ static int cli_io_handler_wait(struct appctx *appctx)
 	if (ctx->cond == CLI_WAIT_COND_SRV_UNUSED ||
 	    ctx->cond == CLI_WAIT_COND_BE_UNUSED) {
 		if (ctx->cond == CLI_WAIT_COND_SRV_UNUSED) {
-			/* check if the server in args[0]/args[1] can be released now */
-			ret = srv_check_for_deletion(ctx->args[0], ctx->args[1], NULL, NULL, &ctx->msg);
+			struct server *srv;
+
+			srv = find_be_srv(ctx->args[0], ctx->args[1], &ctx->msg);
+			if (!srv) {
+				ret = -1;
+				goto wait_srv_done;
+			}
+
+			/* check if the server in args can be released now */
+			ret = srv_check_for_deletion(srv, &ctx->msg);
 		}
 		else {
 			ret = be_check_for_deletion(ctx->args[0], NULL, &ctx->msg);
 		}
 
+	 wait_srv_done:
 		if (ret < 0) {
 			/* unrecoverable failure */
 			ctx->error = CLI_WAIT_ERR_FAIL;
