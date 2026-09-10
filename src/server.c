@@ -7031,12 +7031,22 @@ static int cli_parse_delete_server(char **args, char *payload, struct appctx *ap
 {
 	struct server *srv;
 	const char *msg;
-	int ret;
+	int ret, nofail = 0;
 
 	if (!cli_has_level(appctx, ACCESS_LVL_ADMIN))
 		return 1;
 
 	++args;
+
+	if (*args[2]) {
+		if (strcmp(args[2], "nofail") == 0) {
+			nofail = 1;
+		}
+		else {
+			cli_err(appctx, "Invalid extra argument.\n");
+			goto out;
+		}
+	}
 
 	/* The proxy servers list is currently not protected by a lock so this
 	 * requires thread isolation. In addition, any place referencing the
@@ -7052,10 +7062,27 @@ static int cli_parse_delete_server(char **args, char *payload, struct appctx *ap
 		goto out;
 	}
 
+	/* If nofail is active, server is automatically set in maintenance
+	 * mode. Also, agent checks are disabled to prevent the server state to
+	 * be accidentally updated.
+	 */
+	if (nofail &&
+	    (!(srv->cur_admin & SRV_ADMF_MAINT) || srv->agent.state & CHK_ST_ENABLED)) {
+		srv_adm_set_maint(srv);
+		srv->agent.state &= ~CHK_ST_ENABLED;
+	}
+
 	ret = srv_check_for_deletion(srv, &msg);
 	if (ret <= 0) {
-		/* failure (recoverable or not) */
-		cli_err(appctx, msg);
+		if (!ret && nofail) {
+			/* nofail deletion mode - server flagged for later deletion */
+			srv->flags |= SRV_F_TO_DELETE;
+			cli_msg(appctx, LOG_INFO, "Server flagged for deletion.\n");
+		}
+		else {
+			/* failure (recoverable or not) */
+			cli_err(appctx, msg);
+		}
 		goto out;
 	}
 
