@@ -112,6 +112,7 @@ struct cli_wait_ctx {
 	enum cli_wait_err error; // CLI_WAIT_ERR_*
 	char *args[4];           // up to 4 args taken at parse time, all strduped
 	const char *msg;         // static error message for failures if not NULL
+	int mode_force;
 };
 
 struct pcli_txn {

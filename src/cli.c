@@ -2445,6 +2445,9 @@ static int cli_parse_wait(char **args, char *payload, struct appctx *appctx, voi
 	if (!cli_has_level(appctx, ACCESS_LVL_ADMIN))
 		return 1;
 
+	if (strcmp(args[0], "wait-force") == 0)
+		ctx->mode_force = 1;
+
 	if (!*args[1])
 		return cli_err(appctx, "Expects a duration in milliseconds.\n");
 
@@ -2626,7 +2629,7 @@ static int cli_io_handler_wait(struct appctx *appctx)
 
  wait:
 	/* Stop waiting upon close/abort/error */
-	if (unlikely(se_fl_test(appctx->sedesc, SE_FL_SHW)) && !b_data(&appctx->inbuf)) {
+	if (!ctx->mode_force && unlikely(se_fl_test(appctx->sedesc, SE_FL_SHW)) && !b_data(&appctx->inbuf)) {
 		ctx->error = CLI_WAIT_ERR_INTR;
 		return 1;
 	}
@@ -4527,6 +4530,7 @@ static struct cli_kw_list cli_kws = {{ },{
 	{ { "operator", NULL },                  "operator                                : lower the level of the current CLI session to operator",  cli_parse_set_lvl, NULL, NULL, NULL, ACCESS_MASTER},
 	{ { "user", NULL },                      "user                                    : lower the level of the current CLI session to user",      cli_parse_set_lvl, NULL, NULL, NULL, ACCESS_MASTER},
 	{ { "wait", NULL },                      "wait {-h|<delay_ms>} cond [args...]     : wait the specified delay or condition (-h to see list)",  cli_parse_wait, cli_io_handler_wait, cli_release_wait, NULL },
+	{ { "wait-force", NULL },                "wait-force {-h|<delay_ms>} cond [args...] : wait the specified delay or condition (-h to see list)", cli_parse_wait, cli_io_handler_wait, cli_release_wait, NULL },
 	{ { "_send_status", NULL },              NULL,  											      _send_status, NULL, NULL, NULL, ACCESS_MASTER_ONLY },
 	{{},}
 }};
