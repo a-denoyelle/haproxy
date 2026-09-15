@@ -1,0 +1,89 @@
+# Test server deletion using nofail mode
+
+varnishtest "Delete server via cli using nofail mode"
+
+feature ignore_unknown_macro
+
+haproxy h1 -conf {
+	global
+	.if feature(THREAD)
+		thread-groups 1
+	.endif
+
+	defaults
+		mode http
+		timeout connect "${HAPROXY_TEST_TIMEOUT-5s}"
+		timeout client  "${HAPROXY_TEST_TIMEOUT-5s}"
+		timeout server  "${HAPROXY_TEST_TIMEOUT-5s}"
+
+	frontend fe1
+		bind "fd@${fe1}"
+		use_backend be1
+
+	backend be1
+		server srv ${h1_fpriv_addr}:${h1_fpriv_port}
+
+
+	frontend fe_priv
+		bind "fd@${fpriv}"
+		http-request pause 100ms
+		http-request return status 200
+
+	frontend fe_int
+		bind "fd@${fint}"
+		http-request return status 200
+} -start
+
+# wait for haproxy startup
+client c0 -connect ${h1_fint_sock} {
+	txreq
+	rxresp
+} -run
+
+# Start a long request to temporarily block server deletion
+client c1 -connect ${h1_fe1_sock} {
+	txreq
+	rxresp
+	expect resp.status == "200"
+} -start
+
+shell {
+	# Ensure srv-deleted is rejected if del server not yet performed
+	out=$(echo "wait 300ms srv-deleted be1/srv" | socat -,ignoreeof=1 "${tmpdir}/h1/stats")
+	[ "$out" != "Failed. Server not flagged for deletion." ] && \
+	  { echo "expect failure: srv-deleted not rejected: ${out}"; exit 1; }
+
+	# Try server deletion in normal mode
+	# Active request must prevent it
+	out=$(echo "del server be1/srv" | socat - "${tmpdir}/h1/stats")
+	[ "$out" != "Only servers in maintenance mode can be deleted." ] && \
+	  { echo "expect failure: normal server deletion still active not rejected: ${out}"; exit 1; }
+
+	echo "disable server be1/srv" | socat -,ignoreeof=1 "${tmpdir}/h1/stats"
+	out=$(echo "del server be1/srv" | socat -,ignoreeof=1 "${tmpdir}/h1/stats")
+	[ "$out" != "Server still has connections attached to it, cannot remove it." ] && \
+	  { echo "expect failure: normal server deletion with active conns not rejected: ${out}"; exit 1; }
+	echo $out
+
+	# Re-enable server - nofail is expected to automatically turn it off
+	echo "enable server be1/srv" | socat -,ignoreeof=1 "${tmpdir}/h1/stats"
+
+	# Flag server for deletion
+	# Active request must prevent immediate success
+	out=$(echo "del server be1/srv nofail" | socat - "${tmpdir}/h1/stats")
+	[ "$out" != "Server flagged for deletion." ] && \
+	  { echo "expect failure: nofail deletion rejected: ${out}"; exit 1; }
+
+	# Proceed to server deletion
+	# Uses a wait timeout to cover the currently active request completion
+	out=$(echo "wait 300ms srv-deleted be1/srv" | socat -,ignoreeof=1 "${tmpdir}/h1/stats")
+	[ "$out" != "Done." ] && \
+	  { echo "expect failure: wait srv-deleted failure: ${out}"; exit 1; }
+
+	# Ensures server is not accessible anymore
+	out=$(echo "enable server be1/srv" | socat - "${tmpdir}/h1/stats")
+	[ "$out" != "No such server." ] && \
+	  { echo "expect failure: server still present: ${out}"; exit 1; }
+
+	exit 0
+}
