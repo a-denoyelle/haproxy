@@ -5149,19 +5149,13 @@ static int cli_parse_add_backend(char **args, char *payload, struct appctx *appc
  * is found. If <pm> is not NULL, it will be used on error to point to the
  * description failure.
  */
-int be_check_for_deletion(const char *bename, struct proxy **pb, const char **pm)
+int be_check_for_deletion(struct proxy *be, const char **pm)
 {
-	struct proxy *be = NULL;
 	const char *msg = NULL;
 	int ret;
 
 	/* First, unrecoverable errors */
 	ret = -1;
-
-	if (!(be = proxy_be_by_name(bename))) {
-		msg = "No such backend.";
-		goto out;
-	}
 
 	if (be->cap & PR_CAP_FE) {
 		msg = "Cannot delete a listen section.";
@@ -5204,8 +5198,6 @@ int be_check_for_deletion(const char *bename, struct proxy **pb, const char **pm
 	ret = 1;
 
  out:
-	if (pb)
-		*pb = be;
 	if (pm)
 		*pm = msg;
 	return ret;
@@ -5217,7 +5209,6 @@ static int cli_parse_delete_backend(char **args, char *payload, struct appctx *a
 	struct watcher *px_watch;
 	struct proxy *px;
 	const char *msg;
-	char *be_name;
 	int ret;
 
 	if (!cli_has_level(appctx, ACCESS_LVL_ADMIN))
@@ -5230,8 +5221,13 @@ static int cli_parse_delete_backend(char **args, char *payload, struct appctx *a
 
 	thread_isolate_full();
 
-	be_name = args[2];
-	ret = be_check_for_deletion(be_name, &px, &msg);
+	px = cli_find_backend(appctx, args[2]);
+	if (!px) {
+		/* error message displayed by above function */
+		goto out;
+	}
+
+	ret = be_check_for_deletion(px, &msg);
 	if (ret <= 0) {
 		cli_err(appctx, msg);
 		goto out;

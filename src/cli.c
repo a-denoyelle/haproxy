@@ -2588,7 +2588,16 @@ static int cli_io_handler_wait(struct appctx *appctx)
 			}
 		}
 		else {
-			ret = be_check_for_deletion(ctx->args[0], NULL, &ctx->msg);
+			struct proxy *px;
+
+			px = proxy_be_by_name(ctx->args[0]);
+			if (!px) {
+				ret = -1;
+				ctx->msg = "No such backend.\n";
+				goto wait_srv_done;
+			}
+
+			ret = be_check_for_deletion(px, &ctx->msg);
 		}
 
 	 wait_srv_done:
