@@ -5203,10 +5203,30 @@ int be_check_for_deletion(struct proxy *be, const char **pm)
 	return ret;
 }
 
+void proxy_unregister(struct proxy *px)
+{
+	struct watcher *px_watch;
+
+	BUG_ON((px->cap & PR_CAP_LISTEN) != PR_CAP_BE);
+
+	while (!MT_LIST_ISEMPTY(&px->watcher_list)) {
+		px_watch = MT_LIST_NEXT(&px->watcher_list, struct watcher *, el);
+		watcher_next(px_watch, main_proxies_next(px));
+	}
+
+	ceb32_item_delete(&used_proxy_id, conf.uuid_node, uuid, px);
+	cebis_item_delete(&proxy_by_name, conf.name_node, id, px);
+
+	/* Detach backend from global main_proxies. */
+	LIST_DELETE(&px->el);
+
+	px->flags |= PR_FL_DELETED;
+
+}
+
 /* Handler for "delete backend". Runs under thread isolation. Always returns 1. */
 static int cli_parse_delete_backend(char **args, char *payload, struct appctx *appctx, void *private)
 {
-	struct watcher *px_watch;
 	struct proxy *px;
 	const char *msg;
 	int ret;
@@ -5233,19 +5253,7 @@ static int cli_parse_delete_backend(char **args, char *payload, struct appctx *a
 		goto out;
 	}
 
-	while (!MT_LIST_ISEMPTY(&px->watcher_list)) {
-		px_watch = MT_LIST_NEXT(&px->watcher_list, struct watcher *, el);
-		watcher_next(px_watch, main_proxies_next(px));
-	}
-
-	ceb32_item_delete(&used_proxy_id, conf.uuid_node, uuid, px);
-	cebis_item_delete(&proxy_by_name, conf.name_node, id, px);
-
-	/* Detach backend from global main_proxies. */
-	LIST_DELETE(&px->el);
-
-	px->flags |= PR_FL_DELETED;
-
+	proxy_unregister(px);
 	thread_release();
 
 	ha_notice("Backend deleted.\n");
