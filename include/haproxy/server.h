@@ -266,6 +266,7 @@ static inline void srv_adm_set_maint(struct server *s)
 {
 	srv_set_admin_flag(s, SRV_ADMF_FMAINT, SRV_ADM_STCHGC_NONE);
 	srv_clr_admin_flag(s, SRV_ADMF_FDRAIN);
+	s->flags &= ~SRV_F_TO_DELETE;
 }
 
 /* Puts server <s> into drain mode, and propagate that status down to all
@@ -275,6 +276,7 @@ static inline void srv_adm_set_drain(struct server *s)
 {
 	srv_set_admin_flag(s, SRV_ADMF_FDRAIN, SRV_ADM_STCHGC_NONE);
 	srv_clr_admin_flag(s, SRV_ADMF_FMAINT);
+	s->flags &= ~SRV_F_TO_DELETE;
 }
 
 /* Puts server <s> into ready mode, and propagate that status down to all
@@ -284,6 +286,7 @@ static inline void srv_adm_set_ready(struct server *s)
 {
 	srv_clr_admin_flag(s, SRV_ADMF_FDRAIN);
 	srv_clr_admin_flag(s, SRV_ADMF_FMAINT);
+	s->flags &= ~SRV_F_TO_DELETE;
 }
 
 static inline void srv_set_init_state(struct server *srv)
@@ -401,6 +404,8 @@ static inline void srv_detach(struct server *srv)
 	struct proxy *px = srv->proxy;
 
 	LIST_DEL_INIT(&srv->el_px);
+	LIST_DEL_INIT(&srv->el_to_init);
+
 	/* Reset the proxy's ready_srv if it was this one. */
 	HA_ATOMIC_CAS(&px->ready_srv, &srv, NULL);
 }

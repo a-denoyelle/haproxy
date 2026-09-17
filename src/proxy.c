@@ -507,19 +507,76 @@ void proxy_drop(struct proxy *p)
 	ha_free(&p);
 }
 
+static int proxy_purge_servers(struct proxy *px)
+{
+	struct server *srv, *srvtmp;
+	struct proxy *px2;
+	struct server *srv2;
+	int ret = 0, del;
+
+	list_for_each_entry_safe(srv, srvtmp, &px->servers_purge, el_to_init) {
+		del = srv_check_for_deletion(px->id, srv->id, &px2, &srv2, NULL);
+		if (!px2 || !srv2) /* TODO is this possible ? */
+			continue;
+
+		if (!(srv->flags & SRV_F_TO_DELETE) || del < 0) {
+			LIST_DEL_INIT(&srv->el_to_init);
+		}
+		else if (del > 0) {
+			ha_notice("%s server purge completed.\n", srv->id);
+			srv_unregister(srv);
+			srv_drop(srv);
+		}
+		/* TODO yield */
+	}
+
+	return ret;
+}
+
 struct task *proxy_process_purge(struct task *t, void *context, unsigned int state)
 {
-	struct proxy *px = context;
+	struct proxy *px;
+	struct server *srv;
+	int ret = 0;
+
+	thread_isolate_full();
 
 	if (!tick_is_expired(t->expire, now_ms))
 		goto requeue;
 
-	if (LIST_ISEMPTY(&px->servers_purge))
+	px = proxy_find_by_name(context, PR_CAP_BE, 0);
+	if (!px) {
+		ha_free(&context);
+		goto requeue;
+	}
+
+	while (!LIST_ISEMPTY(&px->servers_purge)) {
+		ret = 1;
+		srv = LIST_NEXT(&px->servers_purge, struct server *, el_to_init);
+		if (!(srv->flags & SRV_F_TO_DELETE)) {
+			LIST_DEL_INIT(&srv->el_to_init);
+			ret = 0;
+		}
+
+		if (!ret)
+			continue;
+		ret = srv_check_for_deletion(px->id, srv->id, NULL, NULL, NULL);
+		break;
+	}
+
+	if (ret > 0)
+		proxy_purge_servers(px);
+
+	if (LIST_ISEMPTY(&px->servers_purge)) {
 		t->expire = TICK_ETERNITY;
-	else
-		t->expire = tick_add(now_ms, 1000);
+	}
+	else {
+		t->expire = tick_add(now_ms, MS_TO_TICKS(1000));
+	}
+
 
  requeue:
+	thread_release();
 	return t;
 }
 
