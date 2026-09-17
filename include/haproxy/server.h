@@ -259,6 +259,15 @@ static inline int server_is_draining(const struct server *s)
 	return !s->uweight || (s->cur_admin & SRV_ADMF_DRAIN);
 }
 
+/* Cancel the deletion of <s> server. */
+static inline void srv_cancel_purge(struct server *s)
+{
+	/* Cannot remove server from parent proxy purge list without lock.
+	 * Currently this must be delayed to the proxy purge task execution.
+	 */
+	s->flags &= ~SRV_F_TO_DELETE;
+}
+
 /* Puts server <s> into maintenance mode, and propagate that status down to all
  * tracking servers.
  */
@@ -266,6 +275,7 @@ static inline void srv_adm_set_maint(struct server *s)
 {
 	srv_set_admin_flag(s, SRV_ADMF_FMAINT, SRV_ADM_STCHGC_NONE);
 	srv_clr_admin_flag(s, SRV_ADMF_FDRAIN);
+	srv_cancel_purge(s);
 }
 
 /* Puts server <s> into drain mode, and propagate that status down to all
@@ -275,6 +285,7 @@ static inline void srv_adm_set_drain(struct server *s)
 {
 	srv_set_admin_flag(s, SRV_ADMF_FDRAIN, SRV_ADM_STCHGC_NONE);
 	srv_clr_admin_flag(s, SRV_ADMF_FMAINT);
+	srv_cancel_purge(s);
 }
 
 /* Puts server <s> into ready mode, and propagate that status down to all
@@ -284,6 +295,7 @@ static inline void srv_adm_set_ready(struct server *s)
 {
 	srv_clr_admin_flag(s, SRV_ADMF_FDRAIN);
 	srv_clr_admin_flag(s, SRV_ADMF_FMAINT);
+	srv_cancel_purge(s);
 }
 
 static inline void srv_set_init_state(struct server *srv)
@@ -401,6 +413,8 @@ static inline void srv_detach(struct server *srv)
 	struct proxy *px = srv->proxy;
 
 	LIST_DEL_INIT(&srv->el_px);
+	LIST_DEL_INIT(&srv->el_alt);
+
 	/* Reset the proxy's ready_srv if it was this one. */
 	HA_ATOMIC_CAS(&px->ready_srv, &srv, NULL);
 }
