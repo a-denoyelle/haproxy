@@ -474,6 +474,8 @@ void deinit_proxy(struct proxy *p)
 	free(p->desc);
 
 	task_destroy(p->task);
+	if (p->purge_task)
+		task_kill(p->purge_task);
 
 	pool_destroy(p->req_cap_pool);
 	pool_destroy(p->rsp_cap_pool);
@@ -503,6 +505,22 @@ void proxy_drop(struct proxy *p)
 
 	deinit_proxy(p);
 	ha_free(&p);
+}
+
+struct task *proxy_process_purge(struct task *t, void *context, unsigned int state)
+{
+	struct proxy *px = context;
+
+	if (!tick_is_expired(t->expire, now_ms))
+		goto requeue;
+
+	if (LIST_ISEMPTY(&px->servers_purge))
+		t->expire = TICK_ETERNITY;
+	else
+		t->expire = tick_add(now_ms, 1000);
+
+ requeue:
+	return t;
 }
 
 /*
@@ -1599,6 +1617,7 @@ void init_new_proxy(struct proxy *p)
 	p->obj_type = OBJ_TYPE_PROXY;
 	LIST_INIT(&p->global_list);
 	LIST_INIT(&p->servers);
+	LIST_INIT(&p->servers_purge);
 	LIST_INIT(&p->el);
 	LIST_INIT(&p->acl);
 	LIST_INIT(&p->http_req_rules);
@@ -3201,6 +3220,21 @@ int setup_new_proxy(struct proxy *px, const char *name, unsigned int cap, char *
 	/* Internal proxies or with empty name are not stored in the named tree. */
 	if (name && name[0] != '\0' && !(cap & PR_CAP_INT))
 		proxy_store_name(px);
+
+	if ((cap & PR_CAP_BE) && !(cap & (PR_CAP_DEF|PR_CAP_INT)) && name) {
+		px->purge_task = task_new_anywhere();
+		if (!px->purge_task) {
+			memprintf(errmsg, "out of memory while allocating purge task");
+			goto fail;
+		}
+		px->purge_task->context = strdup(name);
+		if (!px->purge_task->context) {
+			memprintf(errmsg, "out of memory while allocating purge task context");
+			goto fail;
+		}
+		px->purge_task->process = proxy_process_purge;
+		px->purge_task->expire = TICK_ETERNITY;
+	}
 
 	if (!(cap & PR_CAP_DEF))
 		LIST_APPEND(&all_proxies, &px->global_list);

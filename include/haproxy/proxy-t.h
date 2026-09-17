@@ -369,6 +369,7 @@ struct proxy {
 	struct list quic_init_rules;		/* quic-initial rules */
 #endif
 	struct list servers;		/* servers present in current backend */
+	struct list servers_purge;		/* servers scheduled for purge */
 	struct server *defsrv;			/* default server configuration */
 	struct ceb_root *defsrv_by_name;	/* named default servers */
 	struct lbprm lbprm;			/* load-balancing parameters */
@@ -451,6 +452,7 @@ struct proxy {
 	struct stktable *table;			/* table for storing sticking streams */
 
 	struct task *task;			/* the associated task, mandatory to manage rate limiting, stopping and resource shortage, NULL if disabled */
+	struct task *purge_task;
 	struct tcpcheck tcpcheck;               /* tcp-check to use to perform a health-check */
 	char *check_command;			/* Command to use for external agent checks */
 	char *check_path;			/* PATH environment to use for external agent checks */
