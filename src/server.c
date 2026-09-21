@@ -6870,19 +6870,28 @@ out:
 	return 1;
 }
 
-/* Check if the server <bename>/<svname> exists and is ready for being deleted.
- * This means that the server is in maintenance with no streams attached to it,
- * no queue and no used idle conns. This is not supposed to change during all
- * the maintenance phase (except for force-persist etc, which are not covered).
- * Both <bename> and <svname> must be valid strings. If pb/ps are not null,
+/* Checks if the server <bename>/<svname> exists and is ready for being
+ * deleted. This means that the server is in maintenance with no streams
+ * attached to it, no queue and no used idle conns. This is not supposed to
+ * change during all the maintenance phase (except for force-persist etc, which
+ * are not covered). Both <bename> and <svname> must be valid strings.
+ *
+ * A boolean <purge> can be set if removal is conducted in background : in this
+ * case the server will be automatically put into maintenance if not already
+ * done instead of blocking on this condition.
+ *
+ * If <pb>/<ps> are not null,
  * upon success, the pointer to the backend and server respectively will be put
- * there. If pm is not null, a pointer to an error/success message is returned
- * there (possibly NULL if nothing to say). Returned values:
- *  >0 if OK
- *   0 if not yet (should wait if it can)
- *  <0 if not possible
+ * there. If <pm> is not null, a pointer to an error/success message is returned
+ * there (possibly NULL if nothing to say).
+ *
+ * Returns a positive value if server can be deleted. If not possible, 0 is
+ * returned if removal is temporarily blocked. A negative value is used if
+ * removal is blocked indefinitely due to its configuration or that it requires
+ * an administrative interaction.
  */
-int srv_check_for_deletion(const char *bename, const char *svname, struct proxy **pb, struct server **ps, const char **pm)
+int srv_check_for_deletion(const char *bename, const char *svname, int purge,
+                           struct proxy **pb, struct server **ps, const char **pm)
 {
 	struct server *srv = NULL;
 	struct proxy *be = NULL;
@@ -6912,8 +6921,13 @@ int srv_check_for_deletion(const char *bename, const char *svname, struct proxy 
 	 * lbprm.ops->set_server_status_down).
 	 */
 	if (!(srv->cur_admin & SRV_ADMF_MAINT)) {
-		msg = "Only servers in maintenance mode can be deleted.";
-		goto leave;
+		if (purge) {
+			srv_adm_set_maint(srv);
+		}
+		else {
+			msg = "Only servers in maintenance mode can be deleted.";
+			goto leave;
+		}
 	}
 
 	/* Second, conditions that may change over time */
@@ -7052,7 +7066,7 @@ static int cli_parse_delete_server(char **args, char *payload, struct appctx *ap
 		goto out;
 	}
 
-	ret = srv_check_for_deletion(ist0(be_name), ist0(sv_name), &be, &srv, &msg);
+	ret = srv_check_for_deletion(ist0(be_name), ist0(sv_name), 0, &be, &srv, &msg);
 	if (ret <= 0) {
 		/* failure (recoverable or not) */
 		cli_err(appctx, msg);
@@ -7093,7 +7107,7 @@ static int cli_parse_purge_server(char **args, char *payload, struct appctx *app
 
 	thread_isolate_full();
 
-	ret = srv_check_for_deletion(ist0(be_name), ist0(sv_name), &be, &srv, &msg);
+	ret = srv_check_for_deletion(ist0(be_name), ist0(sv_name), 1, &be, &srv, &msg);
 	if (ret < 0) {
 		/* Unremovable server, cancel purge. */
 		cli_err(appctx, msg);

@@ -520,7 +520,7 @@ static int proxy_purge_servers(struct proxy *px)
 			continue;
 		}
 
-		del = srv_check_for_deletion(px->id, srv->id, NULL, NULL, NULL);
+		del = srv_check_for_deletion(px->id, srv->id, 0, NULL, NULL, NULL);
 		if (del < 0) {
 			srv_cancel_purge(srv);
 			LIST_DEL_INIT(&srv->el_alt);
