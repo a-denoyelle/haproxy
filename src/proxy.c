@@ -515,7 +515,7 @@ static int proxy_purge_servers(struct proxy *px)
 	int ret = 0, del;
 
 	list_for_each_entry_safe(srv, srvtmp, &px->servers_purge, el_to_init) {
-		del = srv_check_for_deletion(px->id, srv->id, &px2, &srv2, NULL);
+		del = srv_check_for_deletion(px->id, srv->id, 0, &px2, &srv2, NULL);
 		if (!px2 || !srv2) /* TODO is this possible ? */
 			continue;
 
@@ -560,7 +560,7 @@ struct task *proxy_process_purge(struct task *t, void *context, unsigned int sta
 
 		if (!ret)
 			continue;
-		ret = srv_check_for_deletion(px->id, srv->id, NULL, NULL, NULL);
+		ret = srv_check_for_deletion(px->id, srv->id, 0, NULL, NULL, NULL);
 		break;
 	}
 
