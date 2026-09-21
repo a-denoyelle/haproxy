@@ -4695,6 +4695,8 @@ wait { -h | <delay> } [<condition> [<args>...]]
     not met. If everything is OK before the delay, a success is returned and
     the operation is terminated.
 
+  - srv-absent <proxy>/<server>
+
   - srv-removable <proxy>/<server> : this will wait for the specified server to
     be removable by the "del server" command, i.e. be in maintenance and no
     longer have any connection on it (neither active or idle). Some conditions
