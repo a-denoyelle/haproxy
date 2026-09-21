@@ -7173,6 +7173,62 @@ static int cli_parse_purge_server(char **args, char *payload, struct appctx *app
 	return 1;
 }
 
+static int cli_parse_purge_all_servers(char **args, char *payload, struct appctx *appctx, void *private)
+{
+	struct proxy *be;
+	struct server *srv, *srvtmp;
+	int ret, need_resched;
+	int c0 = 0, c1 = 0, c2 = 0;
+	char *msg = NULL;
+
+	if (!cli_has_level(appctx, ACCESS_LVL_ADMIN))
+		return 1;
+
+	args += 3;
+
+	thread_isolate_full();
+	be = cli_find_backend(appctx, args[0]);
+	if (!be)
+		goto out;
+
+	list_for_each_entry_safe(srv, srvtmp, &be->servers, el_px) {
+		/* TODO unnecessary lookup of server perform again here. */
+		ret = srv_check_for_deletion(be->id, srv->id, 1, NULL, NULL, NULL);
+		if (ret < 0) {
+			++c2;
+			continue;
+		}
+
+		if (!ret) {
+			if (!LIST_INLIST(&srv->el_alt))
+				LIST_APPEND(&be->servers_purge, &srv->el_alt);
+			srv->flags |= SRV_F_TO_DELETE;
+			need_resched = 1;
+			++c1;
+		}
+		else {
+			srv_unregister(srv);
+			ha_notice("Server deleted.\n");
+			srv_drop(srv);
+			++c0;
+		}
+	}
+
+	if (need_resched && !tick_isset(be->purge_task->expire)) {
+		be->purge_task->expire = tick_add(now_ms, 1000);
+		task_queue(be->purge_task);
+	}
+
+	cli_dynmsg(appctx, LOG_INFO,
+	           memprintf(&msg, "Servers backend iteration performed: "
+	                           "%d removed, %d scheduled, %d skipped.\n",
+	                           c0, c1, c2));
+
+ out:
+	thread_release();
+	return 0;
+}
+
 /* Reset the statistics counters of a single server, invoked from the
  * "clear counters server <backend>/<server> [force]" CLI command (dispatched
  * by cli_parse_clear_counters() in stats.c, since "clear counters" is a
@@ -7240,6 +7296,7 @@ static struct cli_kw_list cli_kws = {{ },{
 	{ { "add", "server", NULL },             "add server <bk>/<srv>                   : create a new server",                                         cli_parse_add_server, cli_io_handler_add_server },
 	{ { "del", "server", NULL },             "del server <bk>/<srv>                   : remove a server",                                             cli_parse_delete_server, NULL },
 	{ { "purge", "server", NULL },           "purge server <bk>/<srv>                 : remove on background a server",                               cli_parse_purge_server, NULL },
+	{ { "purge", "all", "servers", NULL },   "purge all servers <bk>                  : remove all servers from a backend",                           cli_parse_purge_all_servers, NULL },
 	{{},}
 }};
 
