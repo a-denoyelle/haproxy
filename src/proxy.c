@@ -5306,10 +5306,37 @@ int be_check_for_deletion(const char *bename, struct proxy **pb, const char **pm
 	return ret;
 }
 
+/* Removes <px> from its attach point in the process.
+ *
+ * This operation is mandatory prior the runtime removal of a backend. Once
+ * detached, the backend is flagged for deletion.
+ *
+ * This function cannot fail. This operation is not thread-safe and must only
+ * be called under thread isolation.
+ */
+void be_unregister(struct proxy *px)
+{
+	struct watcher *px_watch;
+
+	BUG_ON((px->cap & PR_CAP_LISTEN) != PR_CAP_BE);
+
+	while (!MT_LIST_ISEMPTY(&px->watcher_list)) {
+		px_watch = MT_LIST_NEXT(&px->watcher_list, struct watcher *, el);
+		watcher_next(px_watch, main_proxies_next(px));
+	}
+
+	ceb32_item_delete(&used_proxy_id, conf.uuid_node, uuid, px);
+	cebis_item_delete(&proxy_by_name, conf.name_node, id, px);
+
+	/* Detach backend from global main_proxies. */
+	LIST_DELETE(&px->el);
+
+	px->flags |= PR_FL_DELETED;
+}
+
 /* Handler for "delete backend". Runs under thread isolation. Always returns 1. */
 static int cli_parse_delete_backend(char **args, char *payload, struct appctx *appctx, void *private)
 {
-	struct watcher *px_watch;
 	struct proxy *px;
 	const char *msg;
 	char *be_name;
@@ -5326,25 +5353,13 @@ static int cli_parse_delete_backend(char **args, char *payload, struct appctx *a
 	thread_isolate_full();
 
 	be_name = args[2];
-	ret = be_check_for_deletion(be_name, &px, &msg);
+	ret = be_check_for_deletion(be_name, 0, &px, &msg);
 	if (ret <= 0) {
 		cli_err(appctx, msg);
 		goto out;
 	}
 
-	while (!MT_LIST_ISEMPTY(&px->watcher_list)) {
-		px_watch = MT_LIST_NEXT(&px->watcher_list, struct watcher *, el);
-		watcher_next(px_watch, main_proxies_next(px));
-	}
-
-	ceb32_item_delete(&used_proxy_id, conf.uuid_node, uuid, px);
-	cebis_item_delete(&proxy_by_name, conf.name_node, id, px);
-
-	/* Detach backend from global main_proxies. */
-	LIST_DELETE(&px->el);
-
-	px->flags |= PR_FL_DELETED;
-
+	be_unregister(px);
 	thread_release();
 
 	ha_notice("Backend deleted.\n");
