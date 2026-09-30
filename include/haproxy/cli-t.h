@@ -103,6 +103,7 @@ enum cli_wait_cond {
 	CLI_WAIT_COND_NONE,      // no condition to wait on
 	CLI_WAIT_COND_SRV_ABSENT,// wait for server name to be available
 	CLI_WAIT_COND_SRV_UNUSED,// wait for server to become unused
+	CLI_WAIT_COND_BE_ABSENT, // wait for backend name to be available
 	CLI_WAIT_COND_BE_UNUSED, // wait for backend to become unused
 };
 

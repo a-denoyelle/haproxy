@@ -2464,6 +2464,9 @@ static int cli_parse_wait(char **args, char *payload, struct appctx *appctx, voi
 	else if (strcmp(args[2], "srv-removable") == 0) {
 		ctx->cond = CLI_WAIT_COND_SRV_UNUSED;
 	}
+	else if (strcmp(args[2], "be-absent") == 0) {
+		ctx->cond = CLI_WAIT_COND_BE_ABSENT;
+	}
 	else if (strcmp(args[2], "be-removable") == 0) {
 		ctx->cond = CLI_WAIT_COND_BE_UNUSED;
 	}
@@ -2509,6 +2512,7 @@ static int cli_parse_wait(char **args, char *payload, struct appctx *appctx, voi
 		break;
 	}
 
+	case CLI_WAIT_COND_BE_ABSENT:
 	case CLI_WAIT_COND_BE_UNUSED:
 		if (!*args[3])
 			return cli_err(appctx, "Missing backend name.\n");
@@ -2582,6 +2586,22 @@ static int cli_io_handler_wait(struct appctx *appctx)
 			/* unrecoverable failure */
 			ctx->error = CLI_WAIT_ERR_FAIL;
 			ctx->msg = "Server not scheduled for purge.\n";
+			return 1;
+		}
+	}
+	else if (ctx->cond == CLI_WAIT_COND_BE_ABSENT) {
+		struct proxy *be;
+
+		be = proxy_be_by_name(ctx->args[0]);
+		if (!be) {
+			/* immediate success */
+			ctx->error = CLI_WAIT_ERR_DONE;
+			return 1;
+		}
+		else if (!(be->flags & PR_FL_TO_PURGE)) {
+			/* unrecoverable failure */
+			ctx->error = CLI_WAIT_ERR_FAIL;
+			ctx->msg = "Backend not scheduled for purge.\n";
 			return 1;
 		}
 	}
