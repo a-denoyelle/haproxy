@@ -525,6 +525,7 @@ static int proxy_purge_servers(struct proxy *px, int max_srv_delete)
 		srv = LIST_NEXT(&px->servers_purge, struct server *, el_alt);
 		if (!(srv->flags & SRV_F_TO_DELETE)) {
 			LIST_DEL_INIT(&srv->el_alt);
+			proxy_cancel_purge(px);
 			continue;
 		}
 
@@ -532,6 +533,7 @@ static int proxy_purge_servers(struct proxy *px, int max_srv_delete)
 		if (check < 0) {
 			srv_cancel_purge(srv);
 			LIST_DEL_INIT(&srv->el_alt);
+			proxy_cancel_purge(px);
 		}
 		else if (check > 0) {
 			if (!(max_srv_delete--)) {
@@ -556,8 +558,9 @@ struct task *proxy_process_purge(struct task *t, void *context, unsigned int sta
 {
 	struct proxy *px = context;
 	const int max_srv_delete = 1000;
+	int ret = 0;
 
-	if (LIST_ISEMPTY(&px->servers_purge))
+	if (LIST_ISEMPTY(&px->servers_purge) && !(px->flags & PR_FL_TO_PURGE))
 		return t;
 
 	thread_isolate_full();
@@ -575,12 +578,25 @@ struct task *proxy_process_purge(struct task *t, void *context, unsigned int sta
 		}
 	}
 
+	if (LIST_ISEMPTY(&px->servers_purge) && (px->flags & PR_FL_TO_PURGE)) {
+		/* TODO unnecessary lookup of backend perform again here. */
+		ret = be_check_for_deletion(px->id, 0, NULL, NULL);
+		if (ret < 0) {
+			proxy_cancel_purge(px);
+		}
+		else if (ret > 0) {
+			ha_notice("%s backend purge completed.\n", px->id);
+			be_unregister(px);
+			proxy_drop(px);
+			goto requeue;
+		}
+	}
+
 	/* Set next task execution or cancel it if no more work to do. */
-	if (LIST_ISEMPTY(&px->servers_purge))
+	if (LIST_ISEMPTY(&px->servers_purge) && !(px->flags & PR_FL_TO_PURGE))
 		t->expire = TICK_ETERNITY;
 	else
 		t->expire = tick_add(now_ms, MS_TO_TICKS(1000));
-
 
  requeue:
 	thread_release();
@@ -5244,9 +5260,11 @@ static int cli_parse_add_backend(char **args, char *payload, struct appctx *appc
  * is found. If <pm> is not NULL, it will be used on error to point to the
  * description failure.
  */
-int be_check_for_deletion(const char *bename, struct proxy **pb, const char **pm)
+int be_check_for_deletion(const char *bename, int mode_purge,
+                          struct proxy **pb, const char **pm)
 {
 	struct proxy *be = NULL;
+	struct server *srv;
 	const char *msg = NULL;
 	int ret;
 
@@ -5283,9 +5301,17 @@ int be_check_for_deletion(const char *bename, struct proxy **pb, const char **pm
 		goto out;
 	}
 
-	if (!LIST_ISEMPTY(&be->servers)) {
+	if (!mode_purge && !LIST_ISEMPTY(&be->servers)) {
 		msg = "Only a backend without server can be deleted.";
 		goto out;
+	}
+	else if (mode_purge) {
+		list_for_each_entry(srv, &be->servers, el_px) {
+			if (!(srv->flags & SRV_F_TO_DELETE)) {
+				msg = "At least one server not flagged for purge.";
+				goto out;
+			}
+		}
 	}
 
 	/* Second, conditions that may change over time */
@@ -5452,10 +5478,54 @@ static int cli_parse_publish_backend(char **args, char *payload, struct appctx *
 
 	thread_isolate();
 	px->flags &= ~PR_FL_BE_UNPUBLISHED;
+	proxy_cancel_purge(px);
 	thread_release();
 
 	ha_notice("Backend published.\n");
 	return cli_umsg(appctx, LOG_INFO);
+}
+
+/* Handler for "purge backend". Runs under thread isolation. Always returns 1. */
+static int cli_parse_purge_backend(char **args, char *payload, struct appctx *appctx, void *private)
+{
+	struct proxy *px;
+	const char *msg;
+	char *be_name;
+	int ret;
+
+	usermsgs_clr("CLI");
+
+	if (!cli_has_level(appctx, ACCESS_LVL_ADMIN))
+		return 1;
+
+	px = cli_find_backend(appctx, args[2]);
+	if (!px)
+		return cli_err(appctx, "No such backend.\n");
+
+	thread_isolate_full();
+
+	be_name = args[2];
+	ret = be_check_for_deletion(be_name, 1, &px, &msg);
+	if (ret < 0) {
+		/* Unremovable backend, cancel purge. */
+		cli_err(appctx, msg);
+		goto out;
+	}
+
+	if (!ret) {
+		px->flags |= PR_FL_TO_PURGE;
+		task_wakeup(px->purge_task, TASK_WOKEN_OTHER);
+		cli_msg(appctx, LOG_INFO, "Backend scheduled for purge.\n");
+	}
+	else {
+		be_unregister(px);
+		cli_msg(appctx, LOG_INFO, "Backend deleted.\n");
+		proxy_drop(px);
+	}
+
+ out:
+	thread_release();
+	return 1;
 }
 
 static int cli_parse_unpublish_backend(char **args, char *payload, struct appctx *appctx, void *private)
@@ -5476,6 +5546,7 @@ static int cli_parse_unpublish_backend(char **args, char *payload, struct appctx
 
 	thread_isolate();
 	px->flags |= PR_FL_BE_UNPUBLISHED;
+	proxy_cancel_purge(px);
 	thread_release();
 
 	ha_notice("Backend unpublished.\n");
@@ -5715,6 +5786,7 @@ static struct cli_kw_list cli_kws = {{ },{
 	{ { "disable", "frontend",  NULL },                 "disable frontend <frontend>             : temporarily disable specific frontend",                          cli_parse_disable_frontend, NULL, NULL },
 	{ { "enable", "frontend",  NULL },                  "enable frontend <frontend>              : re-enable specific frontend",                                    cli_parse_enable_frontend, NULL, NULL },
 	{ { "publish", "backend",  NULL },                  "publish backend <backend>               : mark backend as ready for traffic",                              cli_parse_publish_backend, NULL, NULL },
+	{ { "purge", "backend",  NULL },                    "purge backend <backend>                 : remove a backend on background",                                 cli_parse_purge_backend, NULL, NULL },
 	{ { "set", "maxconn", "frontend",  NULL },          "set maxconn frontend <frontend> <value> : change a frontend's maxconn setting",                            cli_parse_set_maxconn_frontend, NULL },
 	{ { "show", "default-server", NULL },               "show default-server [<backend>]         : list default-server instances in all or a single backend",       cli_parse_show_default_server, cli_io_handler_show_default_server, cli_io_release_show_default_server, },
 	{ { "show", "defaults", NULL },                     "show defaults                           : list all proxies defaults sections",                             NULL, cli_io_handler_show_defaults },

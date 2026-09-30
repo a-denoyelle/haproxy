@@ -2555,7 +2555,7 @@ static int cli_io_handler_wait(struct appctx *appctx)
 			ret = srv_check_for_deletion(ctx->args[0], ctx->args[1], 0, NULL, NULL, &ctx->msg);
 		}
 		else {
-			ret = be_check_for_deletion(ctx->args[0], NULL, &ctx->msg);
+			ret = be_check_for_deletion(ctx->args[0], 0, NULL, &ctx->msg);
 		}
 
 		if (ret < 0) {
