@@ -507,34 +507,45 @@ void proxy_drop(struct proxy *p)
 	ha_free(&p);
 }
 
-/* Try to delete servers flagged for purge in <px> backend. */
-static int proxy_purge_servers(struct proxy *px)
+/* Try to delete servers flagged for purge in <px> backend.
+ *
+ * This function must only runs in thread isolation. To avoid too long run, at
+ * most <max_srv_delete> instances are removed until the function returns, so
+ * that the caller can yield.
+ *
+ * Returns 0 in most cases. A non-zero indicates that the function has been
+ * interrupted after reaching <max_srv_delete> limit.
+ */
+static int proxy_purge_servers(struct proxy *px, int max_srv_delete)
 {
 	struct server *srv;
-	int del = 1;
+	int ret = 0, check = 1;
 
-	while (del && !LIST_ISEMPTY(&px->servers_purge)) {
+	while (check && !LIST_ISEMPTY(&px->servers_purge)) {
 		srv = LIST_NEXT(&px->servers_purge, struct server *, el_alt);
 		if (!(srv->flags & SRV_F_TO_DELETE)) {
 			LIST_DEL_INIT(&srv->el_alt);
 			continue;
 		}
 
-		del = srv_check_for_deletion(px->id, srv->id, 0, NULL, NULL, NULL);
-		if (del < 0) {
+		check = srv_check_for_deletion(px->id, srv->id, 0, NULL, NULL, NULL);
+		if (check < 0) {
 			srv_cancel_purge(srv);
 			LIST_DEL_INIT(&srv->el_alt);
 		}
-		else if (del > 0) {
+		else if (check > 0) {
+			if (!(max_srv_delete--)) {
+				ret = 1;
+				break;
+			}
+
 			ha_notice("%s server purge completed.\n", srv->id);
 			srv_unregister(srv);
 			srv_drop(srv);
 		}
-
-		/* TODO yield */
 	}
 
-	return 0;
+	return ret;
 }
 
 /* Proxy purge task handler, only used by user configured backend instances.
@@ -544,6 +555,7 @@ static int proxy_purge_servers(struct proxy *px)
 struct task *proxy_process_purge(struct task *t, void *context, unsigned int state)
 {
 	struct proxy *px = context;
+	const int max_srv_delete = 1000;
 
 	if (LIST_ISEMPTY(&px->servers_purge))
 		return t;
@@ -556,8 +568,12 @@ struct task *proxy_process_purge(struct task *t, void *context, unsigned int sta
 	if (t->state & TASK_KILLED)
 		goto requeue;
 
-	if (!LIST_ISEMPTY(&px->servers_purge))
-		proxy_purge_servers(px);
+	if (!LIST_ISEMPTY(&px->servers_purge)) {
+		if (proxy_purge_servers(px, max_srv_delete)) {
+			task_wakeup(px->purge_task, TASK_WOKEN_OTHER);
+			goto requeue;
+		}
+	}
 
 	/* Set next task execution or cancel it if no more work to do. */
 	if (LIST_ISEMPTY(&px->servers_purge))
